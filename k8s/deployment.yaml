@@ -48,9 +48,12 @@ spec:
       labels:
         app: telegram-api
     spec:
+      imagePullSecrets:
+        - name: gai-registry
       containers:
       - name: telegram-api
         image: registry.gai.co.id/gai/telegram-api
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
         env:
@@ -116,7 +119,6 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 30
       restartPolicy: Always
-      imagePullPolicy: IfNotPresent
 ---
 # kubernetes/hpa.yaml (Horizontal Pod Autoscaler)
 apiVersion: autoscaling/v2
