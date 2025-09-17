@@ -41,6 +41,7 @@ def get_client(session_id: str) -> TelegramClient:
                 
                 message_text = event.message.text or "[Media/Sticker]"
                 print(f"[{session_id}] New message from {sender_info}: '{message_text[:100]}{'...' if len(message_text) > 100 else ''}'")
+                print(f"full message object: {event}")
                 
                 # Add your custom business logic here
                 # For example: save to database, send webhooks, process commands, etc.

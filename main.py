@@ -1,12 +1,15 @@
 # main.py
 from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
+from telethon.tl.types import InputPeerUser, PeerUser
 from telethon.errors import (
     SessionPasswordNeededError, 
     PhoneCodeInvalidError, 
     PhoneNumberInvalidError,
     FloodWaitError,
-    AuthKeyUnregisteredError
+    AuthKeyUnregisteredError,
+    UsernameNotOccupiedError,
+    PeerIdInvalidError
 )
 
 from models import *
@@ -254,10 +257,115 @@ async def login_password(request: LoginPasswordRequest):
             detail=f"Failed to authenticate with password: {str(e)}"
         )
 
+@app.post("/entity/resolve")
+async def resolve_entity(request: dict):
+    """
+    Force resolve and cache an entity for future use
+    """
+    session_id = request.get("session_id")
+    entity_identifier = request.get("entity_identifier")  # user_id, username, or phone
+    
+    try:
+        if not await is_client_authenticated(session_id):
+            raise HTTPException(status_code=401, detail="User is not authenticated")
+        
+        client = get_client(session_id)
+        await ensure_client_connected(session_id)
+        
+        print(f"Resolving entity: {entity_identifier} for session: {session_id}")
+        
+        # Try multiple resolution methods
+        entity = None
+        
+        # Method 1: Direct resolution
+        try:
+            entity = await client.get_entity(entity_identifier)
+            print(f"Direct resolution successful: {entity}")
+        except Exception as e1:
+            print(f"Direct resolution failed: {e1}")
+            
+            # Method 2: Try as integer if it's digits
+            if str(entity_identifier).strip().isdigit():
+                try:
+                    entity = await client.get_entity(int(entity_identifier))
+                    print(f"Integer resolution successful: {entity}")
+                except Exception as e2:
+                    print(f"Integer resolution failed: {e2}")
+            
+            # Method 3: Search in contacts
+            if not entity:
+                try:
+                    contacts = await client.get_contacts()
+                    for contact in contacts:
+                        if (str(contact.id) == str(entity_identifier) or 
+                            (hasattr(contact, 'username') and contact.username == str(entity_identifier).lstrip('@')) or
+                            (hasattr(contact, 'phone') and contact.phone == str(entity_identifier))):
+                            entity = contact
+                            print(f"Found in contacts: {entity}")
+                            break
+                except Exception as e3:
+                    print(f"Contact search failed: {e3}")
+        
+        if not entity:
+            # Method 4: Search in recent dialogs
+            try:
+                print("Searching in dialogs...")
+                async for dialog in client.iter_dialogs(limit=200):
+                    dialog_entity = dialog.entity
+                    if (str(dialog_entity.id) == str(entity_identifier) or
+                        (hasattr(dialog_entity, 'username') and dialog_entity.username == str(entity_identifier).lstrip('@'))):
+                        entity = dialog_entity
+                        print(f"Found in dialogs: {entity}")
+                        break
+            except Exception as e4:
+                print(f"Dialog search failed: {e4}")
+        
+        if entity:
+            # Force store the entity in session
+            try:
+                # Create a fake update to store the entity
+                from telethon.tl.types import UpdateShortMessage
+                fake_update = type('FakeUpdate', (), {
+                    'users': [entity] if hasattr(entity, 'first_name') else [],
+                    'chats': [entity] if not hasattr(entity, 'first_name') else []
+                })()
+                
+                client.session.process_entities(fake_update)
+                print(f"Entity stored in session cache")
+            except Exception as store_error:
+                print(f"Warning - could not store entity: {store_error}")
+            
+            return {
+                "status": "success",
+                "message": "Entity resolved and cached",
+                "entity": {
+                    "id": entity.id,
+                    "type": type(entity).__name__,
+                    "username": getattr(entity, 'username', None),
+                    "first_name": getattr(entity, 'first_name', None),
+                    "last_name": getattr(entity, 'last_name', None),
+                    "phone": getattr(entity, 'phone', None),
+                    "title": getattr(entity, 'title', None)
+                }
+            }
+        else:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Could not resolve entity: {entity_identifier}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resolving entity: {e}")
+        raise HTTPException(status_code=500, detail=f"Entity resolution failed: {str(e)}")
+
+
+# Enhanced send_message endpoint
 @app.post("/message/send")
 async def send_message(request: SendMessageRequest):
     """
-    Sends a message to a specified chat.
+    Sends a message to a specified chat with automatic entity resolution.
     """
     try:
         # Check if user is authenticated
@@ -271,29 +379,189 @@ async def send_message(request: SendMessageRequest):
         client = get_client(request.session_id)
         await ensure_client_connected(request.session_id)
         
-        print(f"Sending message from session {request.session_id} to {request.chat_id}")
+        chat_id = request.chat_id.strip()
+        print(f"Sending message from session {request.session_id} to {chat_id}")
         
-        # Get the entity and send message
-        entity = await client.get_entity(request.chat_id)
-        await client.send_message(entity, request.message)
+        # Try to send directly first
+        entity = None
+        try:
+            entity = await client.get_entity(chat_id)
+            sent_message = await client.send_message(entity, request.message)
+            
+            return {
+                "status": "success",
+                "message": "Message sent successfully",
+                "message_id": sent_message.id
+            }
+            
+        except Exception as direct_error:
+            print(f"Direct send failed: {direct_error}")
+            
+            # Auto-resolve entity and retry
+            try:
+                print(f"Attempting auto-resolution for {chat_id}")
+                
+                # Call our own resolve endpoint internally
+                resolve_payload = {
+                    "session_id": request.session_id,
+                    "entity_identifier": chat_id
+                }
+                
+                # Resolve entity using our resolution logic
+                entity = await resolve_entity_internal(request.session_id, chat_id, client)
+                
+                if entity:
+                    sent_message = await client.send_message(entity, request.message)
+                    print(f"Message sent after resolution. Message ID: {sent_message.id}")
+                    
+                    return {
+                        "status": "success",
+                        "message": "Message sent successfully after entity resolution",
+                        "message_id": sent_message.id,
+                        "resolved_entity": {
+                            "id": entity.id,
+                            "type": type(entity).__name__
+                        }
+                    }
+                else:
+                    raise ValueError(f"Could not resolve entity for chat_id: {chat_id}")
+                    
+            except Exception as resolve_error:
+                print(f"Auto-resolution failed: {resolve_error}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Chat not found and could not be resolved: {chat_id}. Try using /entity/resolve first."
+                )
         
-        return {
-            "status": "success",
-            "message": "Message sent successfully"
-        }
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Chat not found: {str(e)}"
-        )
-    
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error sending message for session {request.session_id}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send message: {str(e)}"
         )
+
+
+# Internal helper function
+async def resolve_entity_internal(session_id: str, entity_identifier: str, client):
+    """Internal entity resolution without HTTP overhead"""
+    try:
+        print(f"Internal entity resolution for: {entity_identifier}")
+        
+        # Try direct resolution first
+        try:
+            entity = await client.get_entity(entity_identifier)
+            return entity
+        except:
+            pass
+        
+        # Try as integer
+        if str(entity_identifier).strip().isdigit():
+            try:
+                entity = await client.get_entity(int(entity_identifier))
+                return entity
+            except:
+                pass
+        
+        # Search in dialogs (most comprehensive)
+        try:
+            async for dialog in client.iter_dialogs(limit=200):
+                dialog_entity = dialog.entity
+                if (str(dialog_entity.id) == str(entity_identifier) or
+                    (hasattr(dialog_entity, 'username') and 
+                     dialog_entity.username == str(entity_identifier).lstrip('@'))):
+                    
+                    # Store entity in session
+                    try:
+                        fake_update = type('FakeUpdate', (), {
+                            'users': [dialog_entity] if hasattr(dialog_entity, 'first_name') else [],
+                            'chats': [dialog_entity] if not hasattr(dialog_entity, 'first_name') else []
+                        })()
+                        client.session.process_entities(fake_update)
+                    except:
+                        pass
+                    
+                    return dialog_entity
+        except Exception as dialog_error:
+            print(f"Dialog search error: {dialog_error}")
+        
+        return None
+        
+    except Exception as e:
+        print(f"Internal entity resolution error: {e}")
+        return None
+
+
+# Add endpoint to check what entities are cached
+@app.get("/session/{session_id}/entities")
+async def list_cached_entities(session_id: str):
+    """List all cached entities for a session"""
+    try:
+        from database import SessionLocal, Entity
+        
+        db_session = SessionLocal()
+        try:
+            entities = db_session.query(Entity).filter(
+                Entity.session_id == session_id
+            ).all()
+            
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "cached_entities": [
+                    {
+                        "entity_id": entity.entity_id,
+                        "type": entity.type,
+                        "name": entity.name,
+                        "username": entity.username,
+                        "phone": entity.phone
+                    }
+                    for entity in entities
+                ]
+            }
+        finally:
+            db_session.close()
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list entities: {str(e)}")
+
+
+# Add endpoint to manually cache an entity from a recent message
+@app.post("/session/{session_id}/cache-from-messages")
+async def cache_entities_from_messages(session_id: str):
+    """Cache entities from recent messages"""
+    try:
+        if not await is_client_authenticated(session_id):
+            raise HTTPException(status_code=401, detail="User is not authenticated")
+        
+        client = get_client(session_id)
+        await ensure_client_connected(session_id)
+        
+        cached_count = 0
+        
+        # Iterate through recent messages to cache senders
+        async for message in client.iter_messages('me', limit=100):
+            if message.sender:
+                try:
+                    # Process this message to cache the sender
+                    fake_update = type('FakeUpdate', (), {
+                        'users': [message.sender] if hasattr(message.sender, 'first_name') else [],
+                        'chats': [message.sender] if not hasattr(message.sender, 'first_name') else []
+                    })()
+                    client.session.process_entities(fake_update)
+                    cached_count += 1
+                except:
+                    pass
+        
+        return {
+            "status": "success",
+            "message": f"Cached {cached_count} entities from recent messages"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cache entities: {str(e)}")
+        
 
 @app.post("/logout")
 async def logout(request: LogoutRequest):
