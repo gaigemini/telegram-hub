@@ -1,5 +1,6 @@
 # main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from contextlib import asynccontextmanager
 from telethon.tl.types import InputPeerUser, PeerUser
 from telethon.errors import (
@@ -11,7 +12,7 @@ from telethon.errors import (
     UsernameNotOccupiedError,
     PeerIdInvalidError
 )
-
+import os
 from models import *
 from telegram_manager import (
     get_client, 
@@ -22,6 +23,21 @@ from telegram_manager import (
     restore_sessions_on_startup
 )
 from database import init_db
+
+# --- API Key Setup ---
+API_KEY = os.getenv("API_KEY")
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    """Dependency to validate the API key in the request header."""
+    if not API_KEY:
+        print("API_KEY environment variable not set. Endpoint security is disabled.")
+        return
+    if api_key_header == API_KEY:
+        return api_key_header
+    else:
+        raise HTTPException(status_code=403, detail="Could not validate credentials")
 
 # Cache for temporary login data
 login_details_cache = {}
@@ -81,7 +97,7 @@ def health_check():
         "active_sessions": len(clients)
     }
 
-@app.post("/login/start")
+@app.post("/login/start", dependencies=[Security(get_api_key)])
 async def login_start(request: LoginStartRequest):
     """
     Starts the login process by sending a verification code to the user's phone.
@@ -143,7 +159,7 @@ async def login_start(request: LoginStartRequest):
             detail=f"Failed to start login process: {str(e)}"
         )
 
-@app.post("/login/code")
+@app.post("/login/code", dependencies=[Security(get_api_key)])
 async def login_code(request: LoginCodeRequest):
     """
     Submits the verification code received by the user.
@@ -212,7 +228,7 @@ async def login_code(request: LoginCodeRequest):
             detail=f"Failed to verify code: {str(e)}"
         )
 
-@app.post("/login/password")
+@app.post("/login/password", dependencies=[Security(get_api_key)])
 async def login_password(request: LoginPasswordRequest):
     """
     Submits the 2FA password for accounts with two-factor authentication.
@@ -257,7 +273,7 @@ async def login_password(request: LoginPasswordRequest):
             detail=f"Failed to authenticate with password: {str(e)}"
         )
 
-@app.post("/entity/resolve")
+@app.post("/entity/resolve", dependencies=[Security(get_api_key)])
 async def resolve_entity(request: dict):
     """
     Force resolve and cache an entity for future use
@@ -362,7 +378,7 @@ async def resolve_entity(request: dict):
 
 
 # Enhanced send_message endpoint
-@app.post("/message/send")
+@app.post("/message/send", dependencies=[Security(get_api_key)])
 async def send_message(request: SendMessageRequest):
     """
     Sends a message to a specified chat with automatic entity resolution.
@@ -494,7 +510,7 @@ async def resolve_entity_internal(session_id: str, entity_identifier: str, clien
 
 
 # Add endpoint to check what entities are cached
-@app.get("/session/{session_id}/entities")
+@app.get("/session/{session_id}/entities", dependencies=[Security(get_api_key)])
 async def list_cached_entities(session_id: str):
     """List all cached entities for a session"""
     try:
@@ -528,7 +544,7 @@ async def list_cached_entities(session_id: str):
 
 
 # Add endpoint to manually cache an entity from a recent message
-@app.post("/session/{session_id}/cache-from-messages")
+@app.post("/session/{session_id}/cache-from-messages", dependencies=[Security(get_api_key)])
 async def cache_entities_from_messages(session_id: str):
     """Cache entities from recent messages"""
     try:
@@ -563,7 +579,7 @@ async def cache_entities_from_messages(session_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to cache entities: {str(e)}")
         
 
-@app.post("/logout")
+@app.post("/logout", dependencies=[Security(get_api_key)])
 async def logout(request: LogoutRequest):
     """
     Logs out a user and cleans up the session.
@@ -587,7 +603,7 @@ async def logout(request: LogoutRequest):
             detail=f"Failed to logout: {str(e)}"
         )
 
-@app.delete("/session/{session_id}")
+@app.delete("/session/{session_id}", dependencies=[Security(get_api_key)])
 async def destroy_session(session_id: str):
     """
     Completely destroys a session - logs out, disconnects client, and deletes session data.
@@ -626,7 +642,7 @@ async def destroy_session(session_id: str):
             detail=f"Failed to destroy session: {str(e)}"
         )
 
-@app.get("/sessions")
+@app.get("/sessions", dependencies=[Security(get_api_key)])
 async def list_sessions():
     """
     Lists all active sessions with their status.
@@ -686,7 +702,7 @@ async def list_sessions():
             detail=f"Failed to list sessions: {str(e)}"
         )
 
-@app.get("/session/{session_id}/status")
+@app.get("/session/{session_id}/status", dependencies=[Security(get_api_key)])
 async def get_session_status(session_id: str):
     """
     Gets the authentication status of a session.
@@ -734,7 +750,7 @@ async def get_session_status(session_id: str):
             "in_login_cache": session_id in login_details_cache
         }
 
-@app.post("/session/{session_id}/reconnect")
+@app.post("/session/{session_id}/reconnect", dependencies=[Security(get_api_key)])
 async def reconnect_session(session_id: str):
     """
     Attempts to reconnect a disconnected session.
@@ -783,7 +799,7 @@ async def reconnect_session(session_id: str):
             detail=f"Failed to reconnect session: {str(e)}"
         )
 
-@app.post("/admin/restore-sessions")
+@app.post("/admin/restore-sessions", dependencies=[Security(get_api_key)])
 async def restore_sessions():
     """
     Manually restore all authenticated sessions from database.
