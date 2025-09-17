@@ -1,0 +1,29 @@
+---
+# kubernetes/ingress.yaml (Optional - for external access)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: telegram-api-ingress
+  namespace: telegram-api
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - telegram.gai.co.id
+    secretName: telegram-gai-tls
+  rules:
+  - host: telegram.gai.co.id # Replace with your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: telegram-api-service
+            port:
+              number: 80

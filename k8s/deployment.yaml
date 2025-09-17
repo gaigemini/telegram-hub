@@ -1,0 +1,146 @@
+# kubernetes/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telegram-api
+
+---
+# kubernetes/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telegram-api-config
+  namespace: telegram-api
+data:
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  RELOAD: "false"
+
+---
+# kubernetes/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: telegram-api-secrets
+  namespace: telegram-api
+type: Opaque
+stringData:
+  API_ID: "20868361"
+  API_HASH: "290addbebc5956e739e2243a2c9d238c"
+  DATABASE_URL: "postgresql://gai:pvLf09zy6P2VF3s0@202.149.86.229:31769/telegram"
+
+---
+# kubernetes/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telegram-api-deployment
+  namespace: telegram-api
+  labels:
+    app: telegram-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telegram-api
+  template:
+    metadata:
+      labels:
+        app: telegram-api
+    spec:
+      containers:
+      - name: telegram-api
+        image: registry.gai.co.id/gai/telegram-api
+        ports:
+        - containerPort: 8000
+        env:
+        - name: HOST
+          valueFrom:
+            configMapKeyRef:
+              name: telegram-api-config
+              key: HOST
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: telegram-api-config
+              key: PORT
+        - name: RELOAD
+          valueFrom:
+            configMapKeyRef:
+              name: telegram-api-config
+              key: RELOAD
+        - name: API_ID
+          valueFrom:
+            secretKeyRef:
+              name: telegram-api-secrets
+              key: API_ID
+        - name: API_HASH
+          valueFrom:
+            secretKeyRef:
+              name: telegram-api-secrets
+              key: API_HASH
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: telegram-api-secrets
+              key: DATABASE_URL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+      restartPolicy: Always
+      imagePullPolicy: IfNotPresent
+---
+# kubernetes/hpa.yaml (Horizontal Pod Autoscaler)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: telegram-api-hpa
+  namespace: telegram-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: telegram-api-deployment
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
