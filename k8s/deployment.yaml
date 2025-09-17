@@ -28,6 +28,7 @@ stringData:
   API_ID: "20868361"
   API_HASH: "290addbebc5956e739e2243a2c9d238c"
   DATABASE_URL: "postgresql://gai:pvLf09zy6P2VF3s0@202.149.86.229:31769/telegram"
+  API_KEY: "uyd7ep4YPt6U0FmLgeW4evvHGUe9AfrwZeGvx1e63QgWpwak9kWrqHYfcTXPraRq"
 
 ---
 # kubernetes/deployment.yaml
@@ -87,6 +88,11 @@ spec:
             secretKeyRef:
               name: telegram-api-secrets
               key: DATABASE_URL
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: telegram-api-secrets
+              key: API_KEY
         resources:
           requests:
             memory: "256Mi"
