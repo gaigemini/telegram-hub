@@ -19,6 +19,13 @@ class SendMessageRequest(BaseModel):
     chat_id: str # Can be a username, phone number, or channel/group ID
     message: str
 
+# --- NEW MODEL ---
+class ReplyMessageRequest(BaseModel):
+    session_id: str
+    chat_id: str
+    message_id: int
+    message: str
+
 class LogoutRequest(BaseModel):
     session_id: str
 

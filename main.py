@@ -458,6 +458,67 @@ async def send_message(request: SendMessageRequest):
             detail=f"Failed to send message: {str(e)}"
         )
 
+# --- NEW ENDPOINT ---
+@app.post("/message/reply", dependencies=[Security(get_api_key)])
+async def reply_to_message(request: ReplyMessageRequest):
+    """
+    Replies to a specific message in a chat.
+    """
+    try:
+        # Check if user is authenticated
+        if not await is_client_authenticated(request.session_id):
+            raise HTTPException(
+                status_code=401,
+                detail="User is not authenticated. Please login first"
+            )
+
+        # Get client and ensure connection
+        client = get_client(request.session_id)
+        await ensure_client_connected(request.session_id)
+
+        chat_id = request.chat_id.strip()
+        print(f"Replying to message {request.message_id} in chat {chat_id} from session {request.session_id}")
+
+        # Resolve the chat entity
+        entity = await resolve_entity_internal(request.session_id, chat_id, client)
+        if not entity:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Chat not found and could not be resolved: {chat_id}. Try using /entity/resolve first."
+            )
+
+        # Send the reply
+        sent_message = await client.send_message(
+            entity=entity,
+            message=request.message,
+            reply_to=request.message_id
+        )
+
+        return {
+            "status": "success",
+            "message": "Reply sent successfully",
+            "message_id": sent_message.id,
+            "resolved_entity": {
+                "id": entity.id,
+                "type": type(entity).__name__
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error replying to message for session {request.session_id}: {e}")
+        # Telethon might raise ValueError if the message to reply to doesn't exist
+        if 'could not be found' in str(e).lower():
+             raise HTTPException(
+                status_code=404,
+                detail=f"The message with ID {request.message_id} to reply to was not found in chat {chat_id}."
+            )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send reply: {str(e)}"
+        )
+
 
 # Internal helper function
 async def resolve_entity_internal(session_id: str, entity_identifier: str, client):
