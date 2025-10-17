@@ -1,14 +1,45 @@
-# telegram_manager.py
 import os
+import httpx # To send webhooks
+import json
 from telethon import TelegramClient, events
+from telethon.tl.types import User
 from telethon.errors import PhoneCodeInvalidError, PhoneNumberInvalidError
 from database import get_db_session, get_all_sessions
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 
+# --- Webhook Configuration ---
+# Get webhook settings from environment variables
+WEBHOOK_ENABLED = os.getenv("WEBHOOK_ENABLED", "false").lower() == "true"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
 # Global dictionary to store active clients
 clients = {}
+
+async def send_webhook(payload: dict):
+    """
+    Sends a POST request to the configured webhook URL if enabled.
+    """
+    if not WEBHOOK_ENABLED:
+        return # Do nothing if webhooks are not enabled
+
+    if not WEBHOOK_URL:
+        print("⚠️ Webhook is enabled, but no WEBHOOK_URL is configured.")
+        return
+
+    try:
+        # Using an async client to not block the event loop
+        async with httpx.AsyncClient() as client:
+            print(f"🚀 Sending webhook to {WEBHOOK_URL}...")
+            response = await client.post(WEBHOOK_URL, json=payload, timeout=10.0)
+            response.raise_for_status() # Raise an exception for 4xx or 5xx status codes
+            print(f"✅ Webhook sent successfully! Status: {response.status_code}")
+    except httpx.RequestError as e:
+        print(f"❌ Error sending webhook: {e}")
+    except Exception as e:
+        print(f"❌ An unexpected error occurred during webhook dispatch: {e}")
+
 
 def get_client(session_id: str) -> TelegramClient:
     """
@@ -20,31 +51,73 @@ def get_client(session_id: str) -> TelegramClient:
     try:
         print(f"Creating new client for session: {session_id}")
         
-        # Create database session
         db_session = get_db_session(session_id)
-        
-        # Create Telethon client
         client = TelegramClient(db_session, API_ID, API_HASH)
         
-        # Add message handler
         @client.on(events.NewMessage)
         async def handle_new_message(event):
             try:
-                sender_info = "Unknown"
-                if event.sender:
-                    if hasattr(event.sender, 'username') and event.sender.username:
-                        sender_info = f"@{event.sender.username}"
-                    elif hasattr(event.sender, 'first_name'):
-                        sender_info = event.sender.first_name
-                    else:
-                        sender_info = str(event.sender_id)
-                
+                sender = await event.get_sender()
+                sender_info_summary = f"ID: {event.sender_id}"
+
+                if sender and isinstance(sender, User):
+                    if sender.username:
+                        sender_info_summary = f"@{sender.username}"
+                    elif sender.first_name:
+                        sender_info_summary = sender.first_name
+                    
+                    print(f"\n--- Sender info: {sender} ---\n")
+                else:
+                    print(f"\n--- Sender is not a standard user (e.g., a channel) or couldn't be fetched. ID: {event.sender_id} ---\n")
+
                 message_text = event.message.text or "[Media/Sticker]"
-                print(f"[{session_id}] New message from {sender_info}: '{message_text[:100]}{'...' if len(message_text) > 100 else ''}'")
-                print(f"full message object: {event}")
+                print(f"[{session_id}] New message from {sender_info_summary}: '{message_text[:100]}{'...' if len(message_text) > 100 else ''}'")
                 
-                # Add your custom business logic here
-                # For example: save to database, send webhooks, process commands, etc.
+                # --- ADDED SECTION: Webhook Logic ---
+                # This is where your custom business logic starts.
+
+                # 1. Construct the payload
+                sender_details = None
+                if sender and isinstance(sender, User):
+                    sender_details = {
+                        "id": sender.id,
+                        "first_name": sender.first_name,
+                        "last_name": sender.last_name,
+                        "username": sender.username,
+                        "phone": sender.phone,
+                        "is_bot": sender.bot,
+                        "is_verified": sender.verified,
+                    }
+                else:
+                    # Fallback for channels or other non-user entities
+                    sender_details = {"id": event.sender_id}
+
+                webhook_payload = {
+                    "channel_id": session_id,
+                    "channelref": sender.phone,
+                    "chat_id": event.chat_id,
+                    "channel": "TELEGRAM",
+                    "sub_channel": "chat",
+                    "question": message_text,
+                    "question_context": dataReceive["data"],
+                    # "event_type": "new_message",
+                    # "session_id": session_id,
+                    # "message": {
+                    #     "id": event.message.id,
+                    #     "text": event.message.text,
+                    #     "date": event.message.date.isoformat(), # Convert datetime to string
+                    #     "is_private": event.is_private,
+                    #     "is_group": event.is_group,
+                    #     "is_channel": event.is_channel,
+                    # },
+                    # "sender": sender_details
+                }
+
+                # 2. Send the webhook
+                await send_webhook(webhook_payload)
+
+                # You can add other business logic here as well.
+                # --- END OF ADDED SECTION ---
                 
             except Exception as e:
                 print(f"Error handling message for session {session_id}: {e}")
@@ -72,13 +145,9 @@ async def restore_sessions_on_startup():
             try:
                 print(f"Restoring session: {session_id}")
                 
-                # Create client (this loads the session data)
                 client = get_client(session_id)
-                
-                # Try to connect and verify authentication
                 await client.connect()
                 
-                # Check if session is still valid by trying to get user info
                 try:
                     me = await client.get_me()
                     if me:
@@ -93,7 +162,6 @@ async def restore_sessions_on_startup():
                     
             except Exception as e:
                 print(f"❌ Failed to restore session {session_id}: {e}")
-                # Remove invalid session from clients if it was added
                 if session_id in clients:
                     try:
                         await disconnect_client(session_id)
@@ -116,16 +184,12 @@ async def disconnect_client(session_id: str):
     
     try:
         client = clients[session_id]
-        
-        # Disconnect if connected
         if client.is_connected():
             await client.disconnect()
         
-        # Close database session
         if hasattr(client.session, 'close'):
             client.session.close()
         
-        # Remove from active clients
         del clients[session_id]
         print(f"Client disconnected and removed for session: {session_id}")
         
@@ -144,7 +208,6 @@ async def is_client_authenticated(session_id: str) -> bool:
         if not client.is_connected():
             await client.connect()
         
-        # Try to get self - this will fail if not authenticated
         me = await client.get_me()
         return me is not None
         
@@ -164,3 +227,4 @@ async def ensure_client_connected(session_id: str):
         await client.connect()
     
     return client
+
