@@ -23,6 +23,7 @@ from telegram_manager import (
     restore_sessions_on_startup
 )
 from database import init_db
+from fastapi.middleware.cors import CORSMiddleware
 
 # --- API Key Setup ---
 API_KEY = os.getenv("API_KEY")
@@ -80,6 +81,25 @@ app = FastAPI(
     description="A microservice for managing Telegram client sessions",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# FIX 1: Add your exact production/staging domains to this list
+# You MUST include "https://"
+origins = [
+    "https://app.tanyain.ai"
+]
+
+# FIX 2: Define your localhost regex separately
+localhost_regex = r"http://localhost:.*"
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,              # Handles your production list
+    allow_origin_regex=localhost_regex,   # Handles your localhost wildcard
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"], 
 )
 
 @app.get("/")
